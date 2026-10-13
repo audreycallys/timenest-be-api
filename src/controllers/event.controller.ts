@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { and, eq, gt, lt } from "drizzle-orm";
+import { and, eq, gt, lt, ne } from "drizzle-orm";
 import { db } from "../db";
 import { events } from "../db/schema";
 import {
@@ -17,7 +17,35 @@ export class EventsController {
 
       const { title, start_time, end_time, participants } = validatedData;
 
-      // conflict detection nanti di sini
+      const overlappingEvents = await db
+        .select()
+        .from(events)
+        .where(
+          and(lt(events.startTime, end_time), gt(events.endTime, start_time)),
+        );
+
+      const conflicts = overlappingEvents
+        .map((event) => {
+          const conflictingParticipants = participants.filter((participant) =>
+            event.participants.includes(participant),
+          );
+
+          return {
+            event,
+            conflictingParticipants,
+          };
+        })
+        .filter((item) => item.conflictingParticipants.length > 0);
+
+      if (conflicts.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: "Schedule conflict detected",
+          data: {
+            conflicts,
+          },
+        });
+      }
 
       const [newEvent] = await db
         .insert(events)
@@ -125,10 +153,15 @@ export class EventsController {
         });
       }
 
+      const finalTitle = validatedData.title ?? existingEvent.title;
+
       const finalStartTime =
         validatedData.start_time ?? existingEvent.startTime;
 
       const finalEndTime = validatedData.end_time ?? existingEvent.endTime;
+
+      const finalParticipants =
+        validatedData.participants ?? existingEvent.participants;
 
       if (finalStartTime >= finalEndTime) {
         return res.status(400).json({
@@ -137,16 +170,47 @@ export class EventsController {
         });
       }
 
-      // conflict detection update nanti di sini
+      const overlappingEvents = await db
+        .select()
+        .from(events)
+        .where(
+          and(
+            ne(events.id, id),
+            lt(events.startTime, finalEndTime),
+            gt(events.endTime, finalStartTime),
+          ),
+        );
+
+      const conflicts = overlappingEvents
+        .map((event) => {
+          const conflictingParticipants = finalParticipants.filter(
+            (participant) => event.participants.includes(participant),
+          );
+
+          return {
+            event,
+            conflictingParticipants,
+          };
+        })
+        .filter((item) => item.conflictingParticipants.length > 0);
+
+      if (conflicts.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: "Schedule conflict detected",
+          data: {
+            conflicts,
+          },
+        });
+      }
 
       const [updatedEvent] = await db
         .update(events)
         .set({
-          title: validatedData.title ?? existingEvent.title,
+          title: finalTitle,
           startTime: finalStartTime,
           endTime: finalEndTime,
-          participants:
-            validatedData.participants ?? existingEvent.participants,
+          participants: finalParticipants,
         })
         .where(eq(events.id, id))
         .returning();
