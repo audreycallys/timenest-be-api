@@ -9,6 +9,46 @@ import {
   eventQuerySchema,
 } from "../validations/event.validation";
 
+// Cari slot waktu terdekat yang tersedia
+const findNearestAvailableSlot = (
+  startTime: Date,
+  endTime: Date,
+  participants: string[],
+  existingEvents: (typeof events.$inferSelect)[],
+) => {
+  const duration = endTime.getTime() - startTime.getTime();
+
+  let suggestedStart = new Date(startTime);
+  let suggestedEnd = new Date(suggestedStart.getTime() + duration);
+
+  let found = false;
+
+  while (!found) {
+    const conflict = existingEvents.find((event) => {
+      const isTimeOverlap =
+        event.startTime < suggestedEnd && event.endTime > suggestedStart;
+
+      const hasSameParticipant = participants.some((participant) =>
+        event.participants.includes(participant),
+      );
+
+      return isTimeOverlap && hasSameParticipant;
+    });
+
+    if (conflict) {
+      suggestedStart = new Date(conflict.endTime);
+      suggestedEnd = new Date(suggestedStart.getTime() + duration);
+    } else {
+      found = true;
+    }
+  }
+
+  return {
+    start_time: suggestedStart,
+    end_time: suggestedEnd,
+  };
+};
+
 export class EventsController {
   // Create
   createEvent = async (req: Request, res: Response) => {
@@ -17,6 +57,7 @@ export class EventsController {
 
       const { title, start_time, end_time, participants } = validatedData;
 
+      // Conflict
       const overlappingEvents = await db
         .select()
         .from(events)
@@ -38,11 +79,21 @@ export class EventsController {
         .filter((item) => item.conflictingParticipants.length > 0);
 
       if (conflicts.length > 0) {
+        const allEvents = await db.select().from(events);
+
+        const suggestion = findNearestAvailableSlot(
+          start_time,
+          end_time,
+          participants,
+          allEvents,
+        );
+
         return res.status(409).json({
           success: false,
           message: "Schedule conflict detected",
           data: {
             conflicts,
+            suggestion,
           },
         });
       }
@@ -82,11 +133,19 @@ export class EventsController {
 
       const result = await db.select().from(events);
 
+      let filteredEvents = result;
+
+      if (validatedQuery.participant) {
+        filteredEvents = result.filter((event) =>
+          event.participants.includes(validatedQuery.participant!),
+        );
+      }
+
       return res.status(200).json({
         success: true,
         message: "Get Events Successfully",
         data: {
-          events: result,
+          events: filteredEvents,
         },
       });
     } catch (error) {
@@ -170,6 +229,7 @@ export class EventsController {
         });
       }
 
+      // Conflict
       const overlappingEvents = await db
         .select()
         .from(events)
@@ -195,11 +255,24 @@ export class EventsController {
         .filter((item) => item.conflictingParticipants.length > 0);
 
       if (conflicts.length > 0) {
+        const otherEvents = await db
+          .select()
+          .from(events)
+          .where(ne(events.id, id));
+
+        const suggestion = findNearestAvailableSlot(
+          finalStartTime,
+          finalEndTime,
+          finalParticipants,
+          otherEvents,
+        );
+
         return res.status(409).json({
           success: false,
           message: "Schedule conflict detected",
           data: {
             conflicts,
+            suggestion,
           },
         });
       }
